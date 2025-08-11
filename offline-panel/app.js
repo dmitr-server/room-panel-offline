@@ -201,12 +201,19 @@ function rangesOverlap(aStart, aEnd, bStart, bEnd) {
 async function renderBookings() {
   const dateISO = formatDateISO(currentDate);
   const list = $('bookingsList');
+  const finList = $('finishedList');
+  const finCount = $('finishedCount');
   list.innerHTML = '';
+  if (finList) finList.innerHTML = '';
 
   const bookings = await dbGetAllBookingsByDate(dateISO);
-  $('emptyState').style.display = bookings.length ? 'none' : 'block';
+  const now = new Date();
+  const current = now.getHours() * 60 + now.getMinutes();
+  const active = bookings.filter((b) => b.endMins > current);
+  const finished = bookings.filter((b) => b.endMins <= current);
+  $('emptyState').style.display = active.length ? 'none' : 'block';
 
-  for (const b of bookings) {
+  for (const b of active) {
     const li = document.createElement('li');
     li.className = 'booking-item';
     const timeRange = `${minutesToHHMM(b.startMins)}–${minutesToHHMM(b.endMins)}`;
@@ -230,6 +237,33 @@ async function renderBookings() {
       renderBookings();
     }
   }, { once: true });
+
+  if (finList && finCount) {
+    finCount.textContent = finished.length ? `(${finished.length})` : '';
+    for (const b of finished) {
+      const li = document.createElement('li');
+      li.className = 'booking-item';
+      const timeRange = `${minutesToHHMM(b.startMins)}–${minutesToHHMM(b.endMins)}`;
+      li.innerHTML = `
+        <div>
+          <div>${b.title}</div>
+          <div class="booking-meta">${timeRange}</div>
+        </div>
+        <div>
+          <button class="btn btn-danger btn-sm" data-id="${b.id}">Удалить</button>
+        </div>
+      `;
+      finList.appendChild(li);
+    }
+    finList.addEventListener('click', async (e) => {
+      const t = e.target;
+      if (t.matches('button[data-id]')) {
+        const id = Number(t.getAttribute('data-id'));
+        await dbRemoveBooking(id);
+        renderBookings();
+      }
+    }, { once: true });
+  }
 
   // Refresh header status based on current list
   updateStatus();
@@ -339,16 +373,28 @@ function updateHeroFree(nextStart, nowMins) {
       const dayBookings = await dbGetAllBookingsByDate(dateISO);
       const now = new Date();
       const start = Math.max(parseTimeToMinutes(defaultWorkingHours.start), now.getHours() * 60 + now.getMinutes());
+      let anyConflict = false;
       pop.querySelectorAll('.pop-btn[data-mins]').forEach((btn) => {
         const mins = Number(btn.getAttribute('data-mins')) || 30;
         const end = Math.ceil((start + mins) / 15) * 15;
         const conflict = dayBookings.some((b) => rangesOverlap(start, end, b.startMins, b.endMins));
         btn.classList.toggle('conflict', conflict);
+        if (conflict) anyConflict = true;
         btn.onclick = async () => {
           if (conflict) { showToast('Ближайшее время занято'); return; }
           await tryCreateQuick(mins);
         };
       });
+      const manualRow = pop.querySelector('.pop-row.manual');
+      const manualToggle = document.getElementById('manualToggle');
+      if (manualRow && manualToggle) {
+        if (anyConflict) {
+          manualToggle.style.display = 'none';
+          manualRow.classList.add('hidden');
+        } else {
+          manualToggle.style.display = '';
+        }
+      }
     };
     refreshPopoverButtons();
     // ручной выбор
@@ -543,40 +589,65 @@ function attachFormLiveValidation() {
   // первичная отрисовка быстрых слотов
   (async () => {
     const dayBookings = await dbGetAllBookingsByDate(formatDateISO(currentDate));
-    renderQuickSlots(dayBookings, Number(durationEl.value || 15));
+    const starts = renderQuickSlots(dayBookings, Number(durationEl.value || 15));
+    // Автоподстановка первого доступного времени
+    const startEl = document.getElementById('startTime');
+    if (starts && starts.length && startEl) startEl.value = minutesToHHMM(starts[0]);
   })();
+}
+
+async function refreshBookingForm() {
+  const dayBookings = await dbGetAllBookingsByDate(formatDateISO(currentDate));
+  const durationEl = document.getElementById('duration');
+  const duration = Number(durationEl?.value || 15);
+  const starts = renderQuickSlots(dayBookings, duration);
+  const startEl = document.getElementById('startTime');
+  if (starts && starts.length && startEl) startEl.value = minutesToHHMM(starts[0]);
+  // Перепроверим конфликт подсказки/блокировку
+  if (startEl) {
+    const sm = parseTimeToMinutes(startEl.value);
+    const em = Math.ceil((sm + duration) / 15) * 15;
+    const conflict = dayBookings.some((b) => rangesOverlap(sm, em, b.startMins, b.endMins));
+    updateFormConflictHint(sm, em, dayBookings);
+    const submitBtn = document.getElementById('submitBookingBtn');
+    if (submitBtn) submitBtn.disabled = !!conflict;
+  }
+}
+
+function getAvailableStarts(dayBookings, durationMins, limit = 8) {
+  const whStart = parseTimeToMinutes(defaultWorkingHours.start);
+  const whEnd = parseTimeToMinutes(defaultWorkingHours.end);
+  const now = new Date();
+  const current = now.getHours() * 60 + now.getMinutes();
+  let base = Math.max(whStart, Math.ceil(current / 15) * 15);
+  const active = dayBookings.find((b) => b.startMins <= current && current < b.endMins);
+  if (active) base = Math.max(base, Math.ceil(active.endMins / 15) * 15);
+  const starts = [];
+  for (let t = base; t + durationMins <= whEnd && starts.length < limit; t += 15) {
+    const endMins = Math.ceil((t + durationMins) / 15) * 15;
+    const conflict = dayBookings.some((b) => rangesOverlap(t, endMins, b.startMins, b.endMins));
+    if (!conflict) starts.push(t);
+  }
+  return starts;
 }
 
 function renderQuickSlots(dayBookings, durationMins) {
   const container = document.getElementById('quickSlots');
   if (!container) return;
   container.innerHTML = '';
-  const whStart = parseTimeToMinutes(defaultWorkingHours.start);
-  const whEnd = parseTimeToMinutes(defaultWorkingHours.end);
-  // Сформируем ближайшие стартовые моменты: каждые 15 минут от текущего времени рабочего дня
-  const now = new Date();
-  const current = now.getHours() * 60 + now.getMinutes();
-  const base = Math.max(whStart, Math.ceil(current / 15) * 15);
-  const candidates = [];
-  for (let t = base; t + durationMins <= whEnd && candidates.length < 8; t += 15) {
-    candidates.push(t);
-  }
-  // Проверим доступность для каждого кандидата
-  candidates.forEach((startMins) => {
-    const endMins = Math.ceil((startMins + durationMins) / 15) * 15;
-    const conflict = dayBookings.some((b) => rangesOverlap(startMins, endMins, b.startMins, b.endMins));
+  const starts = getAvailableStarts(dayBookings, durationMins);
+  starts.forEach((startMins) => {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'quick-slot' + (conflict ? ' disabled' : '');
+    btn.className = 'quick-slot';
     btn.textContent = minutesToHHMM(startMins);
-    if (!conflict) {
-      btn.addEventListener('click', () => {
-        const startEl = document.getElementById('startTime');
-        if (startEl) startEl.value = minutesToHHMM(startMins);
-      });
-    }
+    btn.addEventListener('click', () => {
+      const startEl = document.getElementById('startTime');
+      if (startEl) startEl.value = minutesToHHMM(startMins);
+    });
     container.appendChild(btn);
   });
+  return starts;
 }
 
 function exportJson() {
@@ -661,8 +732,8 @@ async function refreshTitle() {
 }
 
 function attachEvents() {
-  $('prevDay').addEventListener('click', () => { currentDate.setDate(currentDate.getDate() - 1); updateDateLabel(); renderBookings();});
-  $('nextDay').addEventListener('click', () => { currentDate.setDate(currentDate.getDate() + 1); updateDateLabel(); renderBookings();});
+  $('prevDay').addEventListener('click', async () => { currentDate.setDate(currentDate.getDate() - 1); updateDateLabel(); await renderBookings(); await refreshBookingForm();});
+  $('nextDay').addEventListener('click', async () => { currentDate.setDate(currentDate.getDate() + 1); updateDateLabel(); await renderBookings(); await refreshBookingForm();});
   $('bookingForm').addEventListener('submit', submitBookingForm);
   $('exportBtn').addEventListener('click', exportJson);
   $('importInput').addEventListener('change', (e) => { const f = e.target.files?.[0]; if (f) importJson(f); e.target.value = ''; });
@@ -729,11 +800,21 @@ function attachEvents() {
   // Drawer
   const drawer = document.getElementById('drawer');
   const backdrop = document.getElementById('drawerBackdrop');
-  const openDrawer = () => { drawer?.classList.add('open'); backdrop?.classList.add('show'); };
+  const openDrawer = async () => { drawer?.classList.add('open'); backdrop?.classList.add('show'); await refreshBookingForm(); };
   const closeDrawer = () => { drawer?.classList.remove('open'); backdrop?.classList.remove('show'); };
   document.getElementById('menuBtn')?.addEventListener('click', openDrawer);
   document.getElementById('drawerClose')?.addEventListener('click', closeDrawer);
   backdrop?.addEventListener('click', closeDrawer);
+
+  // Toggle finished list
+  const finToggle = document.getElementById('finishedToggle');
+  const finList = document.getElementById('finishedList');
+  if (finToggle && finList) {
+    finToggle.addEventListener('click', () => {
+      const isHidden = finList.classList.toggle('hidden');
+      finToggle.setAttribute('aria-expanded', String(!isHidden));
+    });
+  }
 }
 
 async function main() {

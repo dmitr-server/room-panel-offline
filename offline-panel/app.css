@@ -153,6 +153,9 @@ input, select {
 /* Секция со списком — скролл по вертикали, верх карточки фиксирован визуально */
 .bookings-section { max-height: 40vh; overflow-y: auto; overscroll-behavior: contain; }
 
+.finished-toggle { cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.hidden { display: none; }
+
 .btn { border: 0; background: var(--secondary); color: var(--text); padding: 10px 12px; border-radius: 10px; }
 .btn:hover { filter: brightness(1.1); }
 .btn-primary { background: var(--primary); color: #062b13; font-weight: 600; }

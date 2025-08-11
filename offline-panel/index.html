@@ -77,6 +77,13 @@
         <div id="emptyState" class="empty">На этот день пока ничего не забронировано</div>
       </section>
 
+      <section id="finishedSection" class="finished-section">
+        <h2 id="finishedToggle" class="section-title finished-toggle" role="button" aria-expanded="false">
+          Оконченные <span id="finishedCount"></span>
+        </h2>
+        <ul id="finishedList" class="bookings-list hidden"></ul>
+      </section>
+
       <footer class="footer">
         <button id="exportBtn" class="btn btn-secondary">Экспорт JSON</button>
         <label class="import-label btn btn-secondary">
