@@ -23,6 +23,9 @@ const parseTimeToMinutes = (input) => {
 const minutesToHHMM = (mins) => `${pad2(Math.floor(mins / 60))}:${pad2(mins % 60)}`;
 
 const defaultWorkingHours = { start: '08:00', end: '20:00' };
+// Testing flag: when true, disable only working-hours limits (08:00–20:00).
+// Rule "< 20 мин до следующей встречи" остаётся активным.
+const DISABLE_WORKING_HOURS = true; // set to false to restore production rules
 
 // IndexedDB minimal helper
 let db = null;
@@ -389,11 +392,13 @@ function updateHeroFree(nextStart, nowMins) {
       const dateISO = formatDateISO(currentDate);
       const dayBookings = await dbGetAllBookingsByDate(dateISO);
       const now = new Date();
-      const start = Math.max(parseTimeToMinutes(defaultWorkingHours.start), now.getHours() * 60 + now.getMinutes());
+      const start = DISABLE_WORKING_HOURS
+        ? (now.getHours() * 60 + now.getMinutes())
+        : Math.max(parseTimeToMinutes(defaultWorkingHours.start), now.getHours() * 60 + now.getMinutes());
       let anyConflict = false;
       // Правило: если до ближайшей встречи < 20 минут, блокируем быстрые брони
       const nextMeet = dayBookings.filter((b) => b.startMins > start).sort((a,b)=>a.startMins-b.startMins)[0];
-      const shortGap = nextMeet ? (nextMeet.startMins - start) < 20 : false;
+      const shortGap = (nextMeet ? (nextMeet.startMins - start) < 20 : false);
       pop.querySelectorAll('.pop-btn[data-mins]').forEach((btn) => {
         const mins = Number(btn.getAttribute('data-mins')) || 30;
         const end = Math.ceil((start + mins) / 15) * 15;
@@ -474,7 +479,7 @@ async function tryCreateQuick(mins) {
   let start = now.getHours() * 60 + now.getMinutes(); // старт немедленно
   const whStart = parseTimeToMinutes(defaultWorkingHours.start);
   const whEnd = parseTimeToMinutes(defaultWorkingHours.end);
-  if (start < whStart) start = whStart;
+  if (!DISABLE_WORKING_HOURS && start < whStart) start = whStart;
   let end = start + mins;
   // Округление конца к ближайшим 15 минутам вверх
   end = Math.ceil(end / 15) * 15;
@@ -487,7 +492,7 @@ async function tryCreateRange(startMins, endMins) {
   endMins = Math.ceil(endMins / 15) * 15; // только к 15‑минутной сетке
   const whStart = parseTimeToMinutes(defaultWorkingHours.start);
   const whEnd = parseTimeToMinutes(defaultWorkingHours.end);
-  if (startMins < whStart || endMins > whEnd) {
+  if (!DISABLE_WORKING_HOURS && (startMins < whStart || endMins > whEnd)) {
     showToast('За пределами рабочих часов');
     return;
   }
