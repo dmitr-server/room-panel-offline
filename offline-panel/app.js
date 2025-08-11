@@ -492,6 +492,42 @@ function updateHeroFree(nextStart, nowMins) {
   }
 }
 
+function attachSettingsForm() {
+  const toggle = document.getElementById('settingsToggle');
+  const panel = document.getElementById('settingsPanel');
+  const form = document.getElementById('settingsForm');
+  if (!toggle || !panel || !form) return;
+  const whStartEl = document.getElementById('whStart');
+  const whEndEl = document.getElementById('whEnd');
+  const allowWeekendsEl = document.getElementById('allowWeekends');
+  const disableWorkingHoursEl = document.getElementById('disableWorkingHours');
+  // init values
+  whStartEl.value = settings.workingHours.start;
+  whEndEl.value = settings.workingHours.end;
+  allowWeekendsEl.checked = !!settings.allowWeekends;
+  disableWorkingHoursEl.checked = !!settings.disableWorkingHoursForTests;
+  toggle.addEventListener('click', () => {
+    panel.classList.toggle('hidden');
+  });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const s = (whStartEl.value || '').trim();
+    const eend = (whEndEl.value || '').trim();
+    if (Number.isNaN(parseTimeToMinutes(s)) || Number.isNaN(parseTimeToMinutes(eend))) {
+      showToast('Некорректные рабочие часы');
+      return;
+    }
+    settings.workingHours = { start: s, end: eend };
+    settings.allowWeekends = !!allowWeekendsEl.checked;
+    settings.disableWorkingHoursForTests = !!disableWorkingHoursEl.checked;
+    await saveSettings();
+    showToast('Настройки сохранены');
+    // Обновить форму и список
+    await refreshBookingForm();
+    await renderBookings();
+  });
+}
+
 function initTimePicker() {
   const hourSel = document.getElementById('tpHour');
   const minSel = document.getElementById('tpMin');
@@ -924,6 +960,7 @@ async function main() {
   try { db = await openDb(); } catch {}
   await loadSettings();
   attachEvents();
+  attachSettingsForm();
   setupAutoReturnTop();
   attachTimeInputMask();
   attachFormLiveValidation();
