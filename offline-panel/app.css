@@ -274,6 +274,7 @@ input, select {
 .tp-col option { padding: 6px 8px; }
 .tp-col:focus { outline: 2px solid var(--glass-border); }
 .tp-colon { color: var(--muted); padding: 0 4px; }
+.form-time-picker { margin-top: 6px; }
 .hidden { display: none; }
 
 @media (min-width: 900px) {

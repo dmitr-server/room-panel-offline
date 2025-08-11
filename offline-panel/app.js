@@ -964,6 +964,49 @@ function attachEvents() {
     // Persist preference in localStorage
     try { localStorage.setItem('theme', document.body.classList.contains('theme-light') ? 'light' : 'dark'); } catch {}
   });
+
+  // Форменный тач‑пикер времени для поля «Начало»
+  const fpWrap = document.getElementById('formTimePicker');
+  const fpHour = document.getElementById('fpHour');
+  const fpMin = document.getElementById('fpMin');
+  const fpApply = document.getElementById('formTimePickApply');
+  const startTimeInput = document.getElementById('startTime');
+  if (fpWrap && fpHour && fpMin && fpApply && startTimeInput) {
+    const ensureOptions = () => {
+      if (!fpHour.options.length) {
+        for (let h = 0; h < 24; h++) {
+          const o = document.createElement('option'); o.value = String(h); o.textContent = pad2(h); fpHour.appendChild(o);
+        }
+      }
+      if (!fpMin.options.length) {
+        for (let m = 0; m < 60; m += 5) { const o = document.createElement('option'); o.value = String(m); o.textContent = pad2(m); fpMin.appendChild(o); }
+      }
+    };
+    const syncFromInput = () => {
+      const v = startTimeInput.value && /^\d{1,2}:\d{2}$/.test(startTimeInput.value) ? startTimeInput.value : minutesToHHMM(Math.ceil((new Date().getHours()*60 + new Date().getMinutes())/15)*15);
+      const mins = parseTimeToMinutes(v);
+      fpHour.value = String(Math.floor(mins/60));
+      fpMin.value = String(mins%60 - (mins%5));
+      // центрируем выбранные опции в видимой области
+      fpHour.selectedOptions[0]?.scrollIntoView({ block: 'center' });
+      fpMin.selectedOptions[0]?.scrollIntoView({ block: 'center' });
+    };
+    // Открывать пикер при тапе на поле времени
+    startTimeInput.addEventListener('click', () => {
+      ensureOptions();
+      fpWrap.classList.toggle('hidden');
+      if (!fpWrap.classList.contains('hidden')) syncFromInput();
+    });
+    fpApply.addEventListener('click', () => {
+      const hh = Number(fpHour.value||0); const mm = Number(fpMin.value||0);
+      startTimeInput.value = `${pad2(hh)}:${pad2(mm)}`;
+      startTimeInput.classList.add('input-highlight');
+      setTimeout(() => startTimeInput.classList.remove('input-highlight'), 500);
+      // триггерим пересчет конфликтов и доступных стартов
+      const ev = new Event('change'); startTimeInput.dispatchEvent(ev);
+      fpWrap.classList.add('hidden');
+    });
+  }
 }
 
 async function main() {
