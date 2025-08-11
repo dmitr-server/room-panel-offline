@@ -11,14 +11,13 @@ const formatDateISO = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad
 const pad2 = (n) => String(n).padStart(2, '0');
 const parseTimeToMinutes = (input) => {
   if (!input) return NaN;
-  const s = String(input).trim().toLowerCase();
-  const m = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  const s = String(input).trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})$/);
   if (!m) return NaN;
   let hours = parseInt(m[1], 10);
-  const mins = parseInt(m[2], 10);
-  const period = (m[4] || '').toLowerCase();
-  if (period === 'pm' && hours < 12) hours += 12;
-  if (period === 'am' && hours === 12) hours = 0;
+  let mins = parseInt(m[2], 10);
+  if (Number.isNaN(hours) || Number.isNaN(mins)) return NaN;
+  if (hours < 0 || hours > 23 || mins < 0 || mins > 59) return NaN;
   return hours * 60 + mins;
 };
 const minutesToHHMM = (mins) => `${pad2(Math.floor(mins / 60))}:${pad2(mins % 60)}`;
@@ -77,6 +76,30 @@ async function dbAdd(store, value) {
     }
     const req = st.add(v);
     req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbUpdateBooking(updated) {
+  if (!db) {
+    // localStorage fallback: find by id across day keys
+    const keys = Object.keys(localStorage).filter((k) => k.startsWith('bookings:'));
+    for (const k of keys) {
+      const arr = JSON.parse(localStorage.getItem(k) || '[]');
+      const idx = arr.findIndex((b) => b.id === updated.id);
+      if (idx !== -1) {
+        arr[idx] = updated;
+        localStorage.setItem(k, JSON.stringify(arr));
+        return true;
+      }
+    }
+    return false;
+  }
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_BOOKINGS, 'readwrite');
+    const st = tx.objectStore(STORE_BOOKINGS);
+    const req = st.put(updated);
+    req.onsuccess = () => resolve(true);
     req.onerror = () => reject(req.error);
   });
 }
@@ -168,7 +191,7 @@ function setFormDefaults() {
   const startMins = now.getHours() * 60 + rounded;
   const start = minutesToHHMM(Math.max(parseTimeToMinutes(defaultWorkingHours.start), Math.min(startMins, parseTimeToMinutes(defaultWorkingHours.end) - 15)));
   $('startTime').value = start;
-  $('duration').value = '30';
+  $('duration').value = '15';
 }
 
 function rangesOverlap(aStart, aEnd, bStart, bEnd) {
@@ -226,7 +249,7 @@ async function updateStatus() {
     text.textContent = `Занята до ${minutesToHHMM(active.endMins)}`;
     const brandDot = document.getElementById('brandDot');
     if (brandDot) brandDot.style.background = '#ef4444';
-    updateHeroBusy(active.endMins);
+    updateHeroBusy(active, minutes);
   } else {
     dot.style.background = '#22c55e';
     const future = bookings.find((b) => b.startMins > minutes);
@@ -237,7 +260,7 @@ async function updateStatus() {
   }
 }
 
-function updateHeroBusy(endMins) {
+function updateHeroBusy(activeBooking, nowMins) {
   const card = document.getElementById('heroCard');
   const title = document.getElementById('heroTitle');
   const sub = document.getElementById('heroSub');
@@ -246,11 +269,24 @@ function updateHeroBusy(endMins) {
   if (!card || !title || !sub || !chip || !action) return;
   card.classList.add('is-busy');
   title.textContent = 'Занято';
-  sub.textContent = `Идёт встреча. До ${minutesToHHMM(endMins)}`;
-  const now = new Date();
-  const mins = now.getHours() * 60 + now.getMinutes();
-  chip.textContent = `Освободится через ${minutesToHHMM(endMins - mins)}`;
+  sub.textContent = `Идёт встреча. До ${minutesToHHMM(activeBooking.endMins)}`;
+  chip.textContent = `Освободится через ${minutesToHHMM(Math.max(0, activeBooking.endMins - nowMins))}`;
   action.textContent = 'Завершить';
+  action.onclick = async () => {
+    const dateISO = formatDateISO(currentDate);
+    // вычислим текущее время в минутах и завершим бронь прямо сейчас
+    const now = new Date();
+    const current = now.getHours() * 60 + now.getMinutes();
+    const finished = { ...activeBooking, endMins: Math.max(activeBooking.startMins, current) };
+    // если длительность стала 0 — удаляем вместо обновления
+    if (finished.endMins <= finished.startMins) {
+      await dbRemoveBooking(finished.id);
+    } else {
+      await dbUpdateBooking(finished);
+    }
+    await renderBookings();
+    showToast('Завершено');
+  };
 }
 
 function updateHeroFree(nextStart, nowMins) {
@@ -298,12 +334,23 @@ function updateHeroFree(nextStart, nowMins) {
   action.onclick = () => { pop?.classList.contains('show') ? hidePop() : showPop(); };
   if (pop) {
     // быстрые варианты
-    pop.querySelectorAll('.pop-btn[data-mins]').forEach((btn) => {
-      btn.onclick = async () => {
+    const refreshPopoverButtons = async () => {
+      const dateISO = formatDateISO(currentDate);
+      const dayBookings = await dbGetAllBookingsByDate(dateISO);
+      const now = new Date();
+      const start = Math.max(parseTimeToMinutes(defaultWorkingHours.start), now.getHours() * 60 + now.getMinutes());
+      pop.querySelectorAll('.pop-btn[data-mins]').forEach((btn) => {
         const mins = Number(btn.getAttribute('data-mins')) || 30;
-        await tryCreateQuick(mins);
-      };
-    });
+        const end = Math.ceil((start + mins) / 15) * 15;
+        const conflict = dayBookings.some((b) => rangesOverlap(start, end, b.startMins, b.endMins));
+        btn.classList.toggle('conflict', conflict);
+        btn.onclick = async () => {
+          if (conflict) { showToast('Ближайшее время занято'); return; }
+          await tryCreateQuick(mins);
+        };
+      });
+    };
+    refreshPopoverButtons();
     // ручной выбор
     initTimePicker();
     const manualToggle = document.getElementById('manualToggle');
@@ -419,17 +466,16 @@ function setTimePickerToNowPlus(mins) {
 async function submitBookingForm(ev) {
   ev.preventDefault();
   const form = ev.currentTarget;
-  const titleEl = $('title');
   const startEl = $('startTime');
   const durationEl = $('duration');
-  const title = titleEl.value.trim();
-  const startTime = startEl.value;
+  const title = 'Встреча';
+  const startTime = startEl.value.trim();
   const duration = Number(durationEl.value);
   if (!title || !startTime || !duration) return;
 
   const startMins = parseTimeToMinutes(startTime);
   if (Number.isNaN(startMins)) {
-    alert('Некорректное время начала. Укажите время формата ЧЧ:ММ');
+    alert('Некорректное время начала. Укажите время формата HH:MM');
     return;
   }
   const endMins = startMins + duration;
@@ -448,6 +494,7 @@ async function submitBookingForm(ev) {
   const conflict = dayBookings.some((b) => rangesOverlap(startMins, endMins, b.startMins, b.endMins));
   if (conflict) {
     alert('Конфликт: слот пересекается с существующей бронью');
+    updateFormConflictHint(startMins, endMins, dayBookings);
     return;
   }
 
@@ -458,6 +505,78 @@ async function submitBookingForm(ev) {
   setFormDefaults();
   renderBookings();
   showToast('Забронировано');
+}
+
+function updateFormConflictHint(startMins, endMins, dayBookings) {
+  const status = document.getElementById('formStatus');
+  if (!status) return;
+  // Найдём первое пересечение/ближайший слот и подскажем корректный диапазон
+  const conflictWith = dayBookings.find((b) => rangesOverlap(startMins, endMins, b.startMins, b.endMins));
+  const next = dayBookings.find((b) => b.startMins >= endMins);
+  if (conflictWith) {
+    status.textContent = `Занято ${minutesToHHMM(conflictWith.startMins)}–${minutesToHHMM(conflictWith.endMins)}. Выберите другое время.`;
+  } else if (next) {
+    status.textContent = `Свободно до ${minutesToHHMM(next.startMins)}.`;
+  } else {
+    status.textContent = 'Рабочие часы: 08:00–20:00.';
+  }
+}
+
+function attachFormLiveValidation() {
+  const startEl = $('startTime');
+  const durationEl = $('duration');
+  const recalc = async () => {
+    const startTime = startEl.value.trim();
+    const duration = Number(durationEl.value);
+    if (!startTime || !duration) return;
+    const startMins = parseTimeToMinutes(startTime);
+    const endMins = Math.ceil((startMins + duration) / 15) * 15;
+    const dayBookings = await dbGetAllBookingsByDate(formatDateISO(currentDate));
+    const conflict = dayBookings.some((b) => rangesOverlap(startMins, endMins, b.startMins, b.endMins));
+    updateFormConflictHint(startMins, endMins, dayBookings);
+    const submitBtn = document.getElementById('submitBookingBtn');
+    if (submitBtn) submitBtn.disabled = !!conflict;
+    renderQuickSlots(dayBookings, duration);
+  };
+  startEl.addEventListener('change', recalc);
+  durationEl.addEventListener('change', recalc);
+  // первичная отрисовка быстрых слотов
+  (async () => {
+    const dayBookings = await dbGetAllBookingsByDate(formatDateISO(currentDate));
+    renderQuickSlots(dayBookings, Number(durationEl.value || 15));
+  })();
+}
+
+function renderQuickSlots(dayBookings, durationMins) {
+  const container = document.getElementById('quickSlots');
+  if (!container) return;
+  container.innerHTML = '';
+  const whStart = parseTimeToMinutes(defaultWorkingHours.start);
+  const whEnd = parseTimeToMinutes(defaultWorkingHours.end);
+  // Сформируем ближайшие стартовые моменты: каждые 15 минут от текущего времени рабочего дня
+  const now = new Date();
+  const current = now.getHours() * 60 + now.getMinutes();
+  const base = Math.max(whStart, Math.ceil(current / 15) * 15);
+  const candidates = [];
+  for (let t = base; t + durationMins <= whEnd && candidates.length < 8; t += 15) {
+    candidates.push(t);
+  }
+  // Проверим доступность для каждого кандидата
+  candidates.forEach((startMins) => {
+    const endMins = Math.ceil((startMins + durationMins) / 15) * 15;
+    const conflict = dayBookings.some((b) => rangesOverlap(startMins, endMins, b.startMins, b.endMins));
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'quick-slot' + (conflict ? ' disabled' : '');
+    btn.textContent = minutesToHHMM(startMins);
+    if (!conflict) {
+      btn.addEventListener('click', () => {
+        const startEl = document.getElementById('startTime');
+        if (startEl) startEl.value = minutesToHHMM(startMins);
+      });
+    }
+    container.appendChild(btn);
+  });
 }
 
 function exportJson() {
@@ -620,6 +739,9 @@ function attachEvents() {
 async function main() {
   try { db = await openDb(); } catch {}
   attachEvents();
+  setupAutoReturnTop();
+  attachTimeInputMask();
+  attachFormLiveValidation();
   updateDateLabel();
   setFormDefaults();
   await refreshTitle();
@@ -644,6 +766,54 @@ function showToast(message) {
   container.appendChild(el);
   setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateY(8px)'; }, 1800);
   setTimeout(() => { el.remove(); }, 2300);
+}
+
+function setupAutoReturnTop() {
+  const section = document.getElementById('bookingsSection');
+  if (!section) return;
+  let timer = null;
+  const delayMs = 15000; // 15 секунд неактивности — возврат к началу карточки
+  const schedule = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { section.scrollTo({ top: 0, behavior: 'smooth' }); }, delayMs);
+  };
+  ['scroll','touchstart','wheel','pointerdown','keydown'].forEach((evt) => section.addEventListener(evt, schedule, { passive: true }));
+  schedule();
+}
+
+function attachTimeInputMask() {
+  const input = document.getElementById('startTime');
+  if (!input) return;
+  const sanitize = (v) => v.replace(/[^0-9]/g, '').slice(0, 4);
+  const format = (digits) => {
+    if (digits.length <= 2) return digits;
+    return `${digits.slice(0, 2)}:${digits.slice(2, 4)}`;
+  };
+  const clamp = (v) => {
+    const m = v.match(/^(\d{1,2})(?::(\d{1,2}))?$/);
+    if (!m) return '';
+    let h = parseInt(m[1] || '0', 10);
+    let mm = parseInt(m[2] || '0', 10);
+    if (Number.isNaN(h)) h = 0; if (Number.isNaN(mm)) mm = 0;
+    if (h > 23) h = 23; if (mm > 59) mm = 59;
+    return `${pad2(h)}:${pad2(mm)}`;
+  };
+  input.addEventListener('input', (e) => {
+    const pos = input.selectionStart || 0;
+    const digits = sanitize(input.value);
+    const beforeColon = digits.length > 2 ? 3 : digits.length; // approximate caret shift
+    input.value = format(digits);
+    // try to keep caret near the end as user types
+    const newPos = Math.min(input.value.length, beforeColon);
+    try { input.setSelectionRange(newPos, newPos); } catch {}
+  });
+  input.addEventListener('blur', () => {
+    const digits = sanitize(input.value);
+    if (!digits) return;
+    let v = format(digits);
+    v = clamp(v);
+    input.value = v;
+  });
 }
 
 
