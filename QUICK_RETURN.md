@@ -4,6 +4,7 @@
 - `offline-panel/index.html` — UI/разметка
 - `offline-panel/app.css` — стиль
 - `offline-panel/app.js` — логика/данные
+- `docs/FEATURES.md` — список возможностей и расширений
 
 ## Как запустить локально
 ```bash
