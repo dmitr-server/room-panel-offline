@@ -22,10 +22,17 @@ const parseTimeToMinutes = (input) => {
 };
 const minutesToHHMM = (mins) => `${pad2(Math.floor(mins / 60))}:${pad2(mins % 60)}`;
 
-const defaultWorkingHours = { start: '08:00', end: '20:00' };
-// Testing flag: when true, disable only working-hours limits (08:00–20:00).
-// Rule "< 20 мин до следующей встречи" остаётся активным.
-const DISABLE_WORKING_HOURS = true; // set to false to restore production rules
+// Runtime settings (can be persisted in meta store)
+const SETTINGS_KEYS = {
+  workingHours: 'settings:workingHours',
+  allowWeekends: 'settings:allowWeekends',
+  disableWorkingHours: 'settings:disableWorkingHoursForTests'
+};
+let settings = {
+  workingHours: { start: '08:00', end: '20:00' },
+  allowWeekends: true,
+  disableWorkingHoursForTests: true
+};
 
 // IndexedDB minimal helper
 let db = null;
@@ -168,6 +175,43 @@ async function setResourceName(name) {
   return dbSet(STORE_META, 'resource:name', name);
 }
 
+// Settings helpers
+async function loadSettings() {
+  if (!db) {
+    try {
+      const raw = localStorage.getItem(SETTINGS_KEYS.workingHours);
+      if (raw) settings.workingHours = JSON.parse(raw);
+      const aw = localStorage.getItem(SETTINGS_KEYS.allowWeekends);
+      if (aw != null) settings.allowWeekends = aw === 'true';
+      const dwh = localStorage.getItem(SETTINGS_KEYS.disableWorkingHours);
+      if (dwh != null) settings.disableWorkingHoursForTests = dwh === 'true';
+    } catch {}
+    return;
+  }
+  const [wh, aw, dwh] = await Promise.all([
+    dbGet(STORE_META, SETTINGS_KEYS.workingHours),
+    dbGet(STORE_META, SETTINGS_KEYS.allowWeekends),
+    dbGet(STORE_META, SETTINGS_KEYS.disableWorkingHours)
+  ]);
+  if (wh) settings.workingHours = wh;
+  if (aw != null) settings.allowWeekends = !!aw;
+  if (dwh != null) settings.disableWorkingHoursForTests = !!dwh;
+}
+
+async function saveSettings() {
+  if (!db) {
+    localStorage.setItem(SETTINGS_KEYS.workingHours, JSON.stringify(settings.workingHours));
+    localStorage.setItem(SETTINGS_KEYS.allowWeekends, String(settings.allowWeekends));
+    localStorage.setItem(SETTINGS_KEYS.disableWorkingHours, String(settings.disableWorkingHoursForTests));
+    return;
+  }
+  await Promise.all([
+    dbSet(STORE_META, SETTINGS_KEYS.workingHours, settings.workingHours),
+    dbSet(STORE_META, SETTINGS_KEYS.allowWeekends, settings.allowWeekends),
+    dbSet(STORE_META, SETTINGS_KEYS.disableWorkingHours, settings.disableWorkingHoursForTests)
+  ]);
+}
+
 // App state
 let currentDate = new Date();
 
@@ -192,7 +236,9 @@ function setFormDefaults() {
   const now = new Date();
   const rounded = Math.ceil(now.getMinutes() / 15) * 15;
   const startMins = now.getHours() * 60 + rounded;
-  const start = minutesToHHMM(Math.max(parseTimeToMinutes(defaultWorkingHours.start), Math.min(startMins, parseTimeToMinutes(defaultWorkingHours.end) - 15)));
+  const whStart = parseTimeToMinutes(settings.workingHours.start);
+  const whEnd = parseTimeToMinutes(settings.workingHours.end);
+  const start = minutesToHHMM(Math.max(whStart, Math.min(startMins, whEnd - 15)));
   $('startTime').value = start;
   $('duration').value = '15';
   // Заполнить список дат (начиная со следующего дня)
@@ -392,9 +438,9 @@ function updateHeroFree(nextStart, nowMins) {
       const dateISO = formatDateISO(currentDate);
       const dayBookings = await dbGetAllBookingsByDate(dateISO);
       const now = new Date();
-      const start = DISABLE_WORKING_HOURS
+      const start = settings.disableWorkingHoursForTests
         ? (now.getHours() * 60 + now.getMinutes())
-        : Math.max(parseTimeToMinutes(defaultWorkingHours.start), now.getHours() * 60 + now.getMinutes());
+        : Math.max(parseTimeToMinutes(settings.workingHours.start), now.getHours() * 60 + now.getMinutes());
       let anyConflict = false;
       // Правило: если до ближайшей встречи < 20 минут, блокируем быстрые брони
       const nextMeet = dayBookings.filter((b) => b.startMins > start).sort((a,b)=>a.startMins-b.startMins)[0];
@@ -477,9 +523,9 @@ function readTimePicker() {
 async function tryCreateQuick(mins) {
   const now = new Date();
   let start = now.getHours() * 60 + now.getMinutes(); // старт немедленно
-  const whStart = parseTimeToMinutes(defaultWorkingHours.start);
-  const whEnd = parseTimeToMinutes(defaultWorkingHours.end);
-  if (!DISABLE_WORKING_HOURS && start < whStart) start = whStart;
+  const whStart = parseTimeToMinutes(settings.workingHours.start);
+  const whEnd = parseTimeToMinutes(settings.workingHours.end);
+  if (!settings.disableWorkingHoursForTests && start < whStart) start = whStart;
   let end = start + mins;
   // Округление конца к ближайшим 15 минутам вверх
   end = Math.ceil(end / 15) * 15;
@@ -490,9 +536,9 @@ async function tryCreateRange(startMins, endMins) {
   // Минимальная длительность 15 минут и выравнивание конца к 15 → 30 минутам
   if (endMins < startMins + 15) endMins = startMins + 15;
   endMins = Math.ceil(endMins / 15) * 15; // только к 15‑минутной сетке
-  const whStart = parseTimeToMinutes(defaultWorkingHours.start);
-  const whEnd = parseTimeToMinutes(defaultWorkingHours.end);
-  if (!DISABLE_WORKING_HOURS && (startMins < whStart || endMins > whEnd)) {
+  const whStart = parseTimeToMinutes(settings.workingHours.start);
+  const whEnd = parseTimeToMinutes(settings.workingHours.end);
+  if (!settings.disableWorkingHoursForTests && (startMins < whStart || endMins > whEnd)) {
     showToast('За пределами рабочих часов');
     return;
   }
@@ -651,8 +697,8 @@ async function refreshBookingForm() {
 }
 
 function getAvailableStarts(dayBookings, durationMins, limit = 8) {
-  const whStart = parseTimeToMinutes(defaultWorkingHours.start);
-  const whEnd = parseTimeToMinutes(defaultWorkingHours.end);
+  const whStart = parseTimeToMinutes(settings.workingHours.start);
+  const whEnd = parseTimeToMinutes(settings.workingHours.end);
   const now = new Date();
   const current = now.getHours() * 60 + now.getMinutes();
   let base = Math.max(whStart, Math.ceil(current / 15) * 15);
@@ -768,8 +814,22 @@ async function refreshTitle() {
 }
 
 function attachEvents() {
-  $('prevDay').addEventListener('click', async () => { currentDate.setDate(currentDate.getDate() - 1); updateDateLabel(); await renderBookings(); await refreshBookingForm();});
-  $('nextDay').addEventListener('click', async () => { currentDate.setDate(currentDate.getDate() + 1); updateDateLabel(); await renderBookings(); await refreshBookingForm();});
+  $('prevDay').addEventListener('click', async () => {
+    const next = new Date(currentDate); next.setDate(next.getDate() - 1);
+    if (!settings.allowWeekends) {
+      const dow = next.getDay();
+      if (dow === 0 || dow === 6) { showToast('Выходные отключены в настройках'); return; }
+    }
+    currentDate = next; updateDateLabel(); await renderBookings(); await refreshBookingForm();
+  });
+  $('nextDay').addEventListener('click', async () => {
+    const next = new Date(currentDate); next.setDate(next.getDate() + 1);
+    if (!settings.allowWeekends) {
+      const dow = next.getDay();
+      if (dow === 0 || dow === 6) { showToast('Выходные отключены в настройках'); return; }
+    }
+    currentDate = next; updateDateLabel(); await renderBookings(); await refreshBookingForm();
+  });
   $('bookingForm').addEventListener('submit', submitBookingForm);
   $('exportBtn').addEventListener('click', exportJson);
   $('importInput').addEventListener('change', (e) => { const f = e.target.files?.[0]; if (f) importJson(f); e.target.value = ''; });
@@ -862,6 +922,7 @@ function attachEvents() {
 
 async function main() {
   try { db = await openDb(); } catch {}
+  await loadSettings();
   attachEvents();
   setupAutoReturnTop();
   attachTimeInputMask();
