@@ -22,17 +22,29 @@ const parseTimeToMinutes = (input) => {
 };
 const minutesToHHMM = (mins) => `${pad2(Math.floor(mins / 60))}:${pad2(mins % 60)}`;
 
-// Runtime settings (can be persisted in meta store)
-const SETTINGS_KEYS = {
-  workingHours: 'settings:workingHours',
-  allowWeekends: 'settings:allowWeekends',
-  disableWorkingHours: 'settings:disableWorkingHoursForTests'
-};
-let settings = {
-  workingHours: { start: '08:00', end: '20:00' },
-  allowWeekends: true,
-  disableWorkingHoursForTests: true
-};
+// Working hours removed: allow booking for the whole day
+const defaultWorkingHours = { start: '00:00', end: '23:59' };
+
+function pluralRu(n, one, few, many) {
+  const nAbs = Math.abs(n);
+  const n10 = nAbs % 10;
+  const n100 = nAbs % 100;
+  if (n10 === 1 && n100 !== 11) return one;
+  if (n10 >= 2 && n10 <= 4 && (n100 < 10 || n100 >= 20)) return few;
+  return many;
+}
+
+function formatDurationRu(totalMinutes) {
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours && minutes) {
+    const h = `${hours} ${pluralRu(hours, 'час', 'часа', 'часов')}`;
+    const m = `${minutes} ${pluralRu(minutes, 'минута', 'минуты', 'минут')}`;
+    return `${h} ${m}`;
+  }
+  if (hours) return `${hours} ${pluralRu(hours, 'час', 'часа', 'часов')}`;
+  return `${minutes} ${pluralRu(minutes, 'минута', 'минуты', 'минут')}`;
+}
 
 // IndexedDB minimal helper
 let db = null;
@@ -175,50 +187,59 @@ async function setResourceName(name) {
   return dbSet(STORE_META, 'resource:name', name);
 }
 
-// Settings helpers
-async function loadSettings() {
-  if (!db) {
-    try {
-      const raw = localStorage.getItem(SETTINGS_KEYS.workingHours);
-      if (raw) settings.workingHours = JSON.parse(raw);
-      const aw = localStorage.getItem(SETTINGS_KEYS.allowWeekends);
-      if (aw != null) settings.allowWeekends = aw === 'true';
-      const dwh = localStorage.getItem(SETTINGS_KEYS.disableWorkingHours);
-      if (dwh != null) settings.disableWorkingHoursForTests = dwh === 'true';
-    } catch {}
-    return;
-  }
-  const [wh, aw, dwh] = await Promise.all([
-    dbGet(STORE_META, SETTINGS_KEYS.workingHours),
-    dbGet(STORE_META, SETTINGS_KEYS.allowWeekends),
-    dbGet(STORE_META, SETTINGS_KEYS.disableWorkingHours)
-  ]);
-  if (wh) settings.workingHours = wh;
-  if (aw != null) settings.allowWeekends = !!aw;
-  if (dwh != null) settings.disableWorkingHoursForTests = !!dwh;
-}
-
-async function saveSettings() {
-  if (!db) {
-    localStorage.setItem(SETTINGS_KEYS.workingHours, JSON.stringify(settings.workingHours));
-    localStorage.setItem(SETTINGS_KEYS.allowWeekends, String(settings.allowWeekends));
-    localStorage.setItem(SETTINGS_KEYS.disableWorkingHours, String(settings.disableWorkingHoursForTests));
-    return;
-  }
-  await Promise.all([
-    dbSet(STORE_META, SETTINGS_KEYS.workingHours, settings.workingHours),
-    dbSet(STORE_META, SETTINGS_KEYS.allowWeekends, settings.allowWeekends),
-    dbSet(STORE_META, SETTINGS_KEYS.disableWorkingHours, settings.disableWorkingHoursForTests)
-  ]);
-}
-
 // App state
 let currentDate = new Date();
+let autoReturnDayTimer = null;
+let autoReturnDayListenersAttached = false;
+
+function resetAutoReturnDayTimer() {
+  // Перезапуск таймера возврата на сегодняшний день, если выбран не сегодняшний день
+  if (autoReturnDayTimer) clearTimeout(autoReturnDayTimer);
+  const today = new Date();
+  if (isSameDay(currentDate, today)) return; // на сегодня — таймер не нужен
+  autoReturnDayTimer = setTimeout(async () => {
+    currentDate = new Date();
+    updateDateLabel();
+    await renderBookings();
+    await refreshBookingForm();
+  }, 15000);
+}
+
+function ensureAutoReturnDayListeners() {
+  if (autoReturnDayListenersAttached) return;
+  autoReturnDayListenersAttached = true;
+  const section = document.getElementById('bookingsSection') || document;
+  const reschedule = () => resetAutoReturnDayTimer();
+  ['scroll','touchstart','wheel','pointerdown','keydown','click'].forEach((evt) =>
+    section.addEventListener(evt, reschedule, { passive: true })
+  );
+}
+
+function isSameDay(a, b) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+function updateNavButtons() {
+  const prev = $('prevDay');
+  if (!prev) return;
+  const today = new Date();
+  if (isSameDay(currentDate, today)) {
+    prev.style.display = 'none';
+  } else {
+    prev.style.display = '';
+  }
+}
 
 function updateNowClock() {
   const now = new Date();
   const hhmm = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
   $('nowClock').textContent = hhmm;
+  // показываем текущую дату в правом верхнем углу, независимо от выбранного дня
+  const dateShortEl = $('dateShort');
+  if (dateShortEl) {
+    const short = now.toLocaleDateString('ru-RU', { weekday: 'long', day: '2-digit', month: 'long' });
+    dateShortEl.textContent = short;
+  }
   // Update availability status regularly
   updateStatus();
 }
@@ -227,36 +248,18 @@ function updateDateLabel() {
   const d = currentDate;
   const label = d.toLocaleDateString('ru-RU', { weekday: 'long', day: '2-digit', month: 'long' });
   $('dateLabel').textContent = label;
-  const short = d.toLocaleDateString('ru-RU', { day: '2-digit', month: 'long', weekday: 'long' });
-  const dateShort = $('dateShort');
-  if (dateShort) dateShort.textContent = short;
+  updateNavButtons();
+  // запланировать авто-возврат при просмотре не сегодняшнего дня
+  resetAutoReturnDayTimer();
 }
 
 function setFormDefaults() {
   const now = new Date();
   const rounded = Math.ceil(now.getMinutes() / 15) * 15;
   const startMins = now.getHours() * 60 + rounded;
-  const whStart = parseTimeToMinutes(settings.workingHours.start);
-  const whEnd = parseTimeToMinutes(settings.workingHours.end);
-  const start = minutesToHHMM(Math.max(whStart, Math.min(startMins, whEnd - 15)));
+  const start = minutesToHHMM(Math.max(0, Math.min(startMins, (24 * 60) - 15)));
   $('startTime').value = start;
   $('duration').value = '15';
-  // Заполнить список дат (начиная со следующего дня)
-  const dateSel = document.getElementById('bookingDate');
-  if (dateSel && dateSel.options.length === 0) {
-    const today = new Date();
-    for (let i = 1; i <= 14; i++) { // 2 недели вперёд
-      const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i);
-      const iso = formatDateISO(d);
-      const opt = document.createElement('option');
-      opt.value = iso;
-      opt.textContent = d.toLocaleDateString('ru-RU', { weekday: 'long', day: '2-digit', month: 'long' });
-      dateSel.appendChild(opt);
-    }
-  }
-  // значение по умолчанию — завтра
-  const dateSel2 = document.getElementById('bookingDate');
-  if (dateSel2) dateSel2.value = formatDateISO(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
 }
 
 function rangesOverlap(aStart, aEnd, bStart, bEnd) {
@@ -264,28 +267,35 @@ function rangesOverlap(aStart, aEnd, bStart, bEnd) {
 }
 
 async function renderBookings() {
-  const dateSel = document.getElementById('bookingDate');
-  const dateISO = dateSel?.value || formatDateISO(currentDate);
+  const dateISO = formatDateISO(currentDate);
   const list = $('bookingsList');
-  const finList = $('finishedList');
-  const finCount = $('finishedCount');
   list.innerHTML = '';
-  if (finList) finList.innerHTML = '';
 
   const bookings = await dbGetAllBookingsByDate(dateISO);
   const now = new Date();
-  const current = now.getHours() * 60 + now.getMinutes();
-  const active = bookings.filter((b) => b.endMins > current);
-  const finished = bookings.filter((b) => b.endMins <= current);
+  const todayISO = formatDateISO(now);
+  let refMins;
+  if (dateISO === todayISO) {
+    refMins = now.getHours() * 60 + now.getMinutes();
+  } else if (dateISO < todayISO) {
+    // прошлый день — все слоты завершены
+    refMins = 24 * 60;
+  } else {
+    // будущий день — ещё ничего не началось
+    refMins = -1;
+  }
+  const active = bookings.filter((b) => b.endMins > refMins);
+  const finished = bookings.filter((b) => b.endMins <= refMins);
   $('emptyState').style.display = active.length ? 'none' : 'block';
 
   for (const b of active) {
     const li = document.createElement('li');
     li.className = 'booking-item';
     const timeRange = `${minutesToHHMM(b.startMins)}–${minutesToHHMM(b.endMins)}`;
+    const durationText = formatDurationRu(Math.max(0, b.endMins - b.startMins));
     li.innerHTML = `
       <div>
-        <div>${b.title}</div>
+        <div>${b.title} <span class="booking-duration">(${durationText})</span></div>
         <div class="booking-meta">${timeRange}</div>
       </div>
       <div>
@@ -304,32 +314,7 @@ async function renderBookings() {
     }
   }, { once: true });
 
-  if (finList && finCount) {
-    finCount.textContent = finished.length ? `(${finished.length})` : '';
-    for (const b of finished) {
-      const li = document.createElement('li');
-      li.className = 'booking-item';
-      const timeRange = `${minutesToHHMM(b.startMins)}–${minutesToHHMM(b.endMins)}`;
-      li.innerHTML = `
-        <div>
-          <div>${b.title}</div>
-          <div class="booking-meta">${timeRange}</div>
-        </div>
-        <div>
-          <button class="btn btn-danger btn-sm" data-id="${b.id}">Удалить</button>
-        </div>
-      `;
-      finList.appendChild(li);
-    }
-    finList.addEventListener('click', async (e) => {
-      const t = e.target;
-      if (t.matches('button[data-id]')) {
-        const id = Number(t.getAttribute('data-id'));
-        await dbRemoveBooking(id);
-        renderBookings();
-      }
-    }, { once: true });
-  }
+  // Удалён блок "Оконченные"
 
   // Refresh header status based on current list
   updateStatus();
@@ -346,14 +331,14 @@ async function updateStatus() {
   if (!dot || !text) return;
   if (active) {
     dot.style.background = '#ef4444';
-    text.textContent = `Занята до ${minutesToHHMM(active.endMins)}`;
+    text.textContent = `Занято до ${minutesToHHMM(active.endMins)}`;
     const brandDot = document.getElementById('brandDot');
     if (brandDot) brandDot.style.background = '#ef4444';
     updateHeroBusy(active, minutes);
   } else {
     dot.style.background = '#22c55e';
     const future = bookings.find((b) => b.startMins > minutes);
-    text.textContent = future ? `Свободна до ${minutesToHHMM(future.startMins)}` : 'Свободна весь день';
+    text.textContent = future ? `Свободно до ${minutesToHHMM(future.startMins)}` : '';
     const brandDot = document.getElementById('brandDot');
     if (brandDot) brandDot.style.background = '#22c55e';
     updateHeroFree(future?.startMins, minutes);
@@ -400,13 +385,35 @@ function updateHeroFree(nextStart, nowMins) {
   title.textContent = 'Свободно';
   if (typeof nextStart === 'number') {
     sub.textContent = `До ${minutesToHHMM(nextStart)}`;
-    chip.textContent = `Свободна ещё ${minutesToHHMM(nextStart - nowMins)}`;
+    chip.textContent = `Свободно ещё ${minutesToHHMM(nextStart - nowMins)}`;
   } else {
-    sub.textContent = 'Свободна весь день';
-    chip.textContent = '—';
+    sub.textContent = '';
+    chip.textContent = '';
+  }
+  const todayISO = formatDateISO(new Date());
+  const viewISO = formatDateISO(currentDate);
+  // Если выбран будущий день — показываем кнопку «Добавить», открывающую боковую панель
+  if (viewISO !== todayISO) {
+    action.textContent = 'Добавить';
+    const pop = document.getElementById('startPopover');
+    pop?.classList.remove('show');
+    action.onclick = () => {
+      // открыть боковую панель бронирования
+      const drawer = document.getElementById('drawer');
+      const backdrop = document.getElementById('drawerBackdrop');
+      drawer?.classList.add('open');
+      backdrop?.classList.add('show');
+      // синхронизировать дату в форме
+      const di = document.getElementById('bookingDate');
+      const dl = document.getElementById('bookingDateLabel');
+      if (di) di.value = viewISO;
+      if (dl) dl.textContent = currentDate.toLocaleDateString('ru-RU', { weekday: 'long', day: '2-digit', month: 'long' });
+      refreshBookingForm();
+    };
+    return;
   }
   action.textContent = 'Начать';
-  // Кнопка «Начать»: открывает поповер с вариантами
+  // Кнопка «Начать»: открывает поповер с вариантами (для сегодняшнего дня)
   const pop = document.getElementById('startPopover');
   let popOutsideHandler = null;
   const showPop = () => {
@@ -438,13 +445,11 @@ function updateHeroFree(nextStart, nowMins) {
       const dateISO = formatDateISO(currentDate);
       const dayBookings = await dbGetAllBookingsByDate(dateISO);
       const now = new Date();
-      const start = settings.disableWorkingHoursForTests
-        ? (now.getHours() * 60 + now.getMinutes())
-        : Math.max(parseTimeToMinutes(settings.workingHours.start), now.getHours() * 60 + now.getMinutes());
+      const start = now.getHours() * 60 + now.getMinutes();
       let anyConflict = false;
       // Правило: если до ближайшей встречи < 20 минут, блокируем быстрые брони
       const nextMeet = dayBookings.filter((b) => b.startMins > start).sort((a,b)=>a.startMins-b.startMins)[0];
-      const shortGap = (nextMeet ? (nextMeet.startMins - start) < 20 : false);
+      const shortGap = nextMeet ? (nextMeet.startMins - start) < 20 : false;
       pop.querySelectorAll('.pop-btn[data-mins]').forEach((btn) => {
         const mins = Number(btn.getAttribute('data-mins')) || 30;
         const end = Math.ceil((start + mins) / 15) * 15;
@@ -492,42 +497,6 @@ function updateHeroFree(nextStart, nowMins) {
   }
 }
 
-function attachSettingsForm() {
-  const toggle = document.getElementById('settingsToggle');
-  const panel = document.getElementById('settingsPanel');
-  const form = document.getElementById('settingsForm');
-  if (!toggle || !panel || !form) return;
-  const whStartEl = document.getElementById('whStart');
-  const whEndEl = document.getElementById('whEnd');
-  const allowWeekendsEl = document.getElementById('allowWeekends');
-  const disableWorkingHoursEl = document.getElementById('disableWorkingHours');
-  // init values
-  whStartEl.value = settings.workingHours.start;
-  whEndEl.value = settings.workingHours.end;
-  allowWeekendsEl.checked = !!settings.allowWeekends;
-  disableWorkingHoursEl.checked = !!settings.disableWorkingHoursForTests;
-  toggle.addEventListener('click', () => {
-    panel.classList.toggle('hidden');
-  });
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const s = (whStartEl.value || '').trim();
-    const eend = (whEndEl.value || '').trim();
-    if (Number.isNaN(parseTimeToMinutes(s)) || Number.isNaN(parseTimeToMinutes(eend))) {
-      showToast('Некорректные рабочие часы');
-      return;
-    }
-    settings.workingHours = { start: s, end: eend };
-    settings.allowWeekends = !!allowWeekendsEl.checked;
-    settings.disableWorkingHoursForTests = !!disableWorkingHoursEl.checked;
-    await saveSettings();
-    showToast('Настройки сохранены');
-    // Обновить форму и список
-    await refreshBookingForm();
-    await renderBookings();
-  });
-}
-
 function initTimePicker() {
   const hourSel = document.getElementById('tpHour');
   const minSel = document.getElementById('tpMin');
@@ -559,9 +528,7 @@ function readTimePicker() {
 async function tryCreateQuick(mins) {
   const now = new Date();
   let start = now.getHours() * 60 + now.getMinutes(); // старт немедленно
-  const whStart = parseTimeToMinutes(settings.workingHours.start);
-  const whEnd = parseTimeToMinutes(settings.workingHours.end);
-  if (!settings.disableWorkingHoursForTests && start < whStart) start = whStart;
+  // no working hours clamp; start is immediate
   let end = start + mins;
   // Округление конца к ближайшим 15 минутам вверх
   end = Math.ceil(end / 15) * 15;
@@ -572,12 +539,8 @@ async function tryCreateRange(startMins, endMins) {
   // Минимальная длительность 15 минут и выравнивание конца к 15 → 30 минутам
   if (endMins < startMins + 15) endMins = startMins + 15;
   endMins = Math.ceil(endMins / 15) * 15; // только к 15‑минутной сетке
-  const whStart = parseTimeToMinutes(settings.workingHours.start);
-  const whEnd = parseTimeToMinutes(settings.workingHours.end);
-  if (!settings.disableWorkingHoursForTests && (startMins < whStart || endMins > whEnd)) {
-    showToast('За пределами рабочих часов');
-    return;
-  }
+  // Disallow crossing day boundary
+  if (endMins > 24 * 60) { showToast('За пределами дня'); return; }
   const dateISO = formatDateISO(currentDate);
   const dayBookings = await dbGetAllBookingsByDate(dateISO);
   // найти ближайшую будущую встречу
@@ -625,6 +588,8 @@ async function submitBookingForm(ev) {
   const title = 'Встреча';
   const startTime = startEl.value.trim();
   const duration = Number(durationEl.value);
+  const dateInput = document.getElementById('bookingDate');
+  const selectedDateISO = (dateInput && dateInput.value) ? dateInput.value : formatDateISO(currentDate);
   if (!title || !startTime || !duration) return;
 
   const startMins = parseTimeToMinutes(startTime);
@@ -635,15 +600,14 @@ async function submitBookingForm(ev) {
   const endMins = startMins + duration;
 
   // Working hours rule
-  const whStart = parseTimeToMinutes(defaultWorkingHours.start);
-  const whEnd = parseTimeToMinutes(defaultWorkingHours.end);
-  if (startMins < whStart || endMins > whEnd) {
-    alert(`Слот вне рабочих часов (${defaultWorkingHours.start}–${defaultWorkingHours.end})`);
+  // Day boundary rule only (без рабочих часов)
+  if (endMins > 24 * 60) {
+    alert('Слот выходит за пределы текущего дня');
     return;
   }
 
   // Overlap rule
-  const dateISO = formatDateISO(currentDate);
+  const dateISO = selectedDateISO;
   const dayBookings = await dbGetAllBookingsByDate(dateISO);
   const conflict = dayBookings.some((b) => rangesOverlap(startMins, endMins, b.startMins, b.endMins));
   if (conflict) {
@@ -657,6 +621,12 @@ async function submitBookingForm(ev) {
   await dbPutBooking(booking);
   form.reset();
   setFormDefaults();
+  // Если выбрана дата через пикер — синхронизируем текущий день интерфейса
+  if (dateInput && dateInput.value) {
+    const [y, m, d] = dateInput.value.split('-').map((n) => parseInt(n, 10));
+    currentDate = new Date(y, m - 1, d);
+    updateDateLabel();
+  }
   renderBookings();
   showToast('Забронировано');
   // Закрыть панель бронирования после успешного создания
@@ -664,6 +634,9 @@ async function submitBookingForm(ev) {
   const backdrop = document.getElementById('drawerBackdrop');
   drawer?.classList.remove('open');
   backdrop?.classList.remove('show');
+  // Планируем авто-возврат на сегодня, если бронь была создана не на сегодняшний день
+  ensureAutoReturnDayListeners();
+  resetAutoReturnDayTimer();
 }
 
 function updateFormConflictHint(startMins, endMins, dayBookings) {
@@ -677,22 +650,20 @@ function updateFormConflictHint(startMins, endMins, dayBookings) {
   } else if (next) {
     status.textContent = `Свободно до ${minutesToHHMM(next.startMins)}.`;
   } else {
-    status.textContent = 'Рабочие часы: 08:00–20:00.';
+    status.textContent = 'Доступно в течение дня.';
   }
 }
 
 function attachFormLiveValidation() {
   const startEl = $('startTime');
   const durationEl = $('duration');
-  const dateSel = document.getElementById('bookingDate');
   const recalc = async () => {
     const startTime = startEl.value.trim();
     const duration = Number(durationEl.value);
     if (!startTime || !duration) return;
     const startMins = parseTimeToMinutes(startTime);
     const endMins = Math.ceil((startMins + duration) / 15) * 15;
-    const dateISO = dateSel?.value || formatDateISO(currentDate);
-    const dayBookings = await dbGetAllBookingsByDate(dateISO);
+    const dayBookings = await dbGetAllBookingsByDate(formatDateISO(currentDate));
     const conflict = dayBookings.some((b) => rangesOverlap(startMins, endMins, b.startMins, b.endMins));
     updateFormConflictHint(startMins, endMins, dayBookings);
     const submitBtn = document.getElementById('submitBookingBtn');
@@ -701,7 +672,6 @@ function attachFormLiveValidation() {
   };
   startEl.addEventListener('change', recalc);
   durationEl.addEventListener('change', recalc);
-  dateSel?.addEventListener('change', recalc);
   // первичная отрисовка быстрых слотов
   (async () => {
     const dayBookings = await dbGetAllBookingsByDate(formatDateISO(currentDate));
@@ -713,9 +683,7 @@ function attachFormLiveValidation() {
 }
 
 async function refreshBookingForm() {
-  const dateSel = document.getElementById('bookingDate');
-  const targetISO = dateSel?.value || formatDateISO(currentDate);
-  const dayBookings = await dbGetAllBookingsByDate(targetISO);
+  const dayBookings = await dbGetAllBookingsByDate(formatDateISO(currentDate));
   const durationEl = document.getElementById('duration');
   const duration = Number(durationEl?.value || 15);
   const starts = renderQuickSlots(dayBookings, duration);
@@ -733,15 +701,16 @@ async function refreshBookingForm() {
 }
 
 function getAvailableStarts(dayBookings, durationMins, limit = 8) {
-  const whStart = parseTimeToMinutes(settings.workingHours.start);
-  const whEnd = parseTimeToMinutes(settings.workingHours.end);
   const now = new Date();
+  const todayISO = formatDateISO(now);
+  const targetISO = formatDateISO(currentDate);
   const current = now.getHours() * 60 + now.getMinutes();
-  let base = Math.max(whStart, Math.ceil(current / 15) * 15);
+  // Для будущих дней начинаем с 00:00, для сегодня — от текущего времени
+  let base = (targetISO === todayISO) ? Math.ceil(current / 15) * 15 : 0;
   const active = dayBookings.find((b) => b.startMins <= current && current < b.endMins);
   if (active) base = Math.max(base, Math.ceil(active.endMins / 15) * 15);
   const starts = [];
-  for (let t = base; t + durationMins <= whEnd && starts.length < limit; t += 15) {
+  for (let t = base; t + durationMins <= 24 * 60 && starts.length < limit; t += 15) {
     const endMins = Math.ceil((t + durationMins) / 15) * 15;
     const conflict = dayBookings.some((b) => rangesOverlap(t, endMins, b.startMins, b.endMins));
     if (!conflict) starts.push(t);
@@ -761,7 +730,12 @@ function renderQuickSlots(dayBookings, durationMins) {
     btn.textContent = minutesToHHMM(startMins);
     btn.addEventListener('click', () => {
       const startEl = document.getElementById('startTime');
-      if (startEl) startEl.value = minutesToHHMM(startMins);
+      if (startEl) {
+        startEl.value = minutesToHHMM(startMins);
+        // краткий визуальный акцент на поле «Начало»
+        startEl.classList.add('input-highlight');
+        setTimeout(() => startEl.classList.remove('input-highlight'), 500);
+      }
     });
     container.appendChild(btn);
   });
@@ -851,24 +825,61 @@ async function refreshTitle() {
 
 function attachEvents() {
   $('prevDay').addEventListener('click', async () => {
-    const next = new Date(currentDate); next.setDate(next.getDate() - 1);
-    if (!settings.allowWeekends) {
-      const dow = next.getDay();
-      if (dow === 0 || dow === 6) { showToast('Выходные отключены в настройках'); return; }
-    }
-    currentDate = next; updateDateLabel(); await renderBookings(); await refreshBookingForm();
+    // Шаг назад на один день; на сегодняшнем дне кнопка скрыта
+    currentDate.setDate(currentDate.getDate() - 1);
+    updateDateLabel();
+    const di = document.getElementById('bookingDate');
+    const dl = document.getElementById('bookingDateLabel');
+    if (di) di.value = formatDateISO(currentDate);
+    if (dl) dl.textContent = currentDate.toLocaleDateString('ru-RU', { weekday: 'long', day: '2-digit', month: 'long' });
+    await renderBookings();
+    await refreshBookingForm();
   });
   $('nextDay').addEventListener('click', async () => {
-    const next = new Date(currentDate); next.setDate(next.getDate() + 1);
-    if (!settings.allowWeekends) {
-      const dow = next.getDay();
-      if (dow === 0 || dow === 6) { showToast('Выходные отключены в настройках'); return; }
-    }
-    currentDate = next; updateDateLabel(); await renderBookings(); await refreshBookingForm();
+    currentDate.setDate(currentDate.getDate() + 1);
+    updateDateLabel();
+    const di = document.getElementById('bookingDate');
+    const dl = document.getElementById('bookingDateLabel');
+    if (di) di.value = formatDateISO(currentDate);
+    if (dl) dl.textContent = currentDate.toLocaleDateString('ru-RU', { weekday: 'long', day: '2-digit', month: 'long' });
+    await renderBookings();
+    await refreshBookingForm();
+    ensureAutoReturnDayListeners();
+    resetAutoReturnDayTimer();
   });
   $('bookingForm').addEventListener('submit', submitBookingForm);
   $('exportBtn').addEventListener('click', exportJson);
   $('importInput').addEventListener('change', (e) => { const f = e.target.files?.[0]; if (f) importJson(f); e.target.value = ''; });
+  // Booking day picker in drawer
+  const dateInput = document.getElementById('bookingDate');
+  const dateBtn = document.getElementById('pickBookingDateBtn');
+  const dateLbl = document.getElementById('bookingDateLabel');
+  if (dateInput && dateBtn && dateLbl) {
+    const initTomorrow = () => {
+      const now = new Date();
+      const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      const iso = formatDateISO(tomorrow);
+      // не ограничиваем min, только выставляем дефолтное значение на завтра
+      if (!dateInput.value) dateInput.value = iso;
+      dateLbl.textContent = tomorrow.toLocaleDateString('ru-RU', { weekday: 'long', day: '2-digit', month: 'long' });
+    };
+    initTomorrow();
+    dateBtn.addEventListener('click', () => {
+      // Откроем нативный пикер
+      dateInput.showPicker ? dateInput.showPicker() : dateInput.focus();
+    });
+    dateInput.addEventListener('change', async () => {
+      const v = dateInput.value;
+      if (!v) return;
+      const [y, m, d] = v.split('-').map((n) => parseInt(n, 10));
+      const picked = new Date(y, (m - 1), d);
+      currentDate = picked;
+      dateLbl.textContent = picked.toLocaleDateString('ru-RU', { weekday: 'long', day: '2-digit', month: 'long' });
+      updateDateLabel();
+      await renderBookings();
+      await refreshBookingForm();
+    });
+  }
   // Quick booking buttons
   document.querySelectorAll('.quick-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -877,13 +888,8 @@ function attachEvents() {
       const now = new Date();
       const rounded = Math.ceil(now.getMinutes() / 15) * 15;
       let startMins = now.getHours() * 60 + rounded;
-      const whStart = parseTimeToMinutes(defaultWorkingHours.start);
-      const whEnd = parseTimeToMinutes(defaultWorkingHours.end);
-      if (startMins < whStart) startMins = whStart;
-      if (startMins + mins > whEnd) {
-        alert('Не хватает времени до конца рабочих часов');
-        return;
-      }
+      // no working hours clamp; allow within the day
+      if (startMins + mins > 24 * 60) { alert('Слот выходит за пределы дня'); return; }
       // Check conflicts
       const dateISO = formatDateISO(currentDate);
       const dayBookings = await dbGetAllBookingsByDate(dateISO);
@@ -894,7 +900,7 @@ function attachEvents() {
         return;
       }
       // Fill form and submit
-      $('title').value = 'Быстрая бронь';
+      const titleEl = $('title'); if (titleEl) titleEl.value = 'Быстрая бронь';
       $('startTime').value = minutesToHHMM(startMins);
       $('duration').value = String(mins);
       $('bookingForm').requestSubmit();
@@ -932,21 +938,25 @@ function attachEvents() {
   // Drawer
   const drawer = document.getElementById('drawer');
   const backdrop = document.getElementById('drawerBackdrop');
-  const openDrawer = async () => { drawer?.classList.add('open'); backdrop?.classList.add('show'); await refreshBookingForm(); };
+  const openDrawer = async () => {
+    drawer?.classList.add('open');
+    backdrop?.classList.add('show');
+    // sync date picker with current date
+    const di = document.getElementById('bookingDate');
+    const dl = document.getElementById('bookingDateLabel');
+    if (di) di.value = formatDateISO(currentDate);
+    if (dl) dl.textContent = currentDate.toLocaleDateString('ru-RU', { weekday: 'long', day: '2-digit', month: 'long' });
+    await refreshBookingForm();
+    // при открытии боковой панели также следим за бездействием
+    ensureAutoReturnDayListeners();
+  };
   const closeDrawer = () => { drawer?.classList.remove('open'); backdrop?.classList.remove('show'); };
   document.getElementById('menuBtn')?.addEventListener('click', openDrawer);
   document.getElementById('drawerClose')?.addEventListener('click', closeDrawer);
   backdrop?.addEventListener('click', closeDrawer);
 
   // Toggle finished list
-  const finToggle = document.getElementById('finishedToggle');
-  const finList = document.getElementById('finishedList');
-  if (finToggle && finList) {
-    finToggle.addEventListener('click', () => {
-      const isHidden = finList.classList.toggle('hidden');
-      finToggle.setAttribute('aria-expanded', String(!isHidden));
-    });
-  }
+  // Удалён блок "Оконченные"
 
   // Theme toggle
   document.getElementById('themeToggle')?.addEventListener('click', () => {
@@ -958,9 +968,7 @@ function attachEvents() {
 
 async function main() {
   try { db = await openDb(); } catch {}
-  await loadSettings();
   attachEvents();
-  attachSettingsForm();
   setupAutoReturnTop();
   attachTimeInputMask();
   attachFormLiveValidation();

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+    <title>Room Panel Demo (Offline)</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="stylesheet" href="./app.css" />
+  </head>
+  <body>
+    <div class="bg-gradient"></div>
+    <div class="bg-blur"></div>
+    <main class="container glass">
+      <header class="app-header">
+        <div class="title">
+          <div class="brand">
+            <div class="brand-mark" id="brandDot"></div>
+          </div>
+          <div class="divider"></div>
+          <h1 id="resourceTitle">Главный зал</h1>
+        </div>
+        <div class="header-right">
+          <div class="date-now">
+            <div id="dateShort" class="date-short">—</div>
+            <div class="now" id="nowClock">--:--</div>
+          </div>
+          <div class="status">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">—</span>
+          </div>
+          <button id="menuBtn" class="btn btn-secondary btn-sm" aria-label="Меню">☰</button>
+        </div>
+      </header>
+
+      <section class="hero" id="heroCard">
+        <div class="hero-left">
+          <div class="hero-title" id="heroTitle">Свободно</div>
+          <div class="hero-sub" id="heroSub">—</div>
+        </div>
+        <div class="hero-right" id="heroRight">
+          <div class="hero-chip" id="heroChip">—</div>
+          <button id="heroAction" class="btn btn-primary" type="button">Начать</button>
+          <div id="startPopover" class="popover" aria-hidden="true">
+            <div class="pop-row">
+              <button class="pop-btn" data-mins="15">15 минут</button>
+              <button class="pop-btn" data-mins="30">30 минут</button>
+              <button class="pop-btn" data-mins="60">1 час</button>
+              <button class="pop-btn" data-mins="120">2 часа</button>
+            </div>
+            <div class="pop-row">
+              <button id="manualToggle" class="btn btn-secondary btn-sm" type="button">Указать</button>
+            </div>
+            <div class="pop-row manual hidden">
+              <label class="pop-label">До</label>
+              <div class="time-picker">
+                <select id="tpHour" class="tp-col" size="5" aria-label="Часы"></select>
+                <span class="tp-colon">:</span>
+                <select id="tpMin" class="tp-col" size="5" aria-label="Минуты"></select>
+              </div>
+              <button id="manualApply" class="btn btn-secondary btn-sm" type="button">Ок</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="controls">
+        <div class="date-nav">
+          <button id="prevDay" class="btn">◀ Назад</button>
+          <div class="date-label" id="dateLabel">—</div>
+          <button id="nextDay" class="btn">Вперёд ▶</button>
+        </div>
+      </section>
+
+      <section id="bookingsSection" class="bookings-section">
+        <h2 class="section-title">Брони на день</h2>
+        <ul id="bookingsList" class="bookings-list"></ul>
+        <div id="emptyState" class="empty">На этот день пока ничего не забронировано</div>
+      </section>
+
+      
+
+      <footer class="footer">
+        <button id="exportBtn" class="btn btn-secondary">Экспорт JSON</button>
+        <label class="import-label btn btn-secondary">
+          Импорт JSON
+          <input id="importInput" type="file" accept="application/json" hidden />
+        </label>
+        <button id="clearBtn" class="btn btn-danger">Сбросить день</button>
+      </footer>
+    </main>
+
+    <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+    <aside id="drawer" class="drawer" aria-hidden="true">
+      <div class="drawer-header">
+        <div>Бронирование</div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button id="themeToggle" class="btn btn-sm" title="Переключить тему">🌓</button>
+          <button id="drawerClose" class="btn btn-sm">✕</button>
+        </div>
+      </div>
+      <form id="bookingForm" class="booking-form" autocomplete="off">
+        <div class="form-row">
+          <label>День</label>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <button id="pickBookingDateBtn" type="button" class="btn btn-secondary btn-sm">Выбрать день</button>
+            <span id="bookingDateLabel" class="form-hint">—</span>
+          </div>
+          <input id="bookingDate" name="bookingDate" type="date" hidden />
+        </div>
+        <div class="form-row">
+          <label for="startTime">Начало</label>
+          <input id="startTime" name="startTime" type="text" placeholder="HH:MM" pattern="^[0-9]{1,2}:[0-9]{2}$" inputmode="numeric" required title="Формат времени: HH:MM (00–23:59)" />
+        </div>
+        <div class="form-row">
+          <label for="duration">Длительность</label>
+          <select id="duration" name="duration">
+            <option value="15" selected>15 мин</option>
+            <option value="30">30 мин</option>
+            <option value="45">45 мин</option>
+            <option value="60">60 мин</option>
+            <option value="90">90 мин</option>
+            <option value="120">120 мин</option>
+          </select>
+        </div>
+        <div class="form-actions">
+          <button id="submitBookingBtn" type="submit" class="btn btn-primary">Забронировать</button>
+        </div>
+        <div class="form-hint" style="margin-top:8px">Доступные ближайшие времена начала</div>
+        <div id="quickSlots" class="quick-slots"></div>
+        <div id="formStatus" class="form-hint">Доступно в течение дня.</div>
+      </form>
+    </aside>
+
+    <div id="drawerBackdrop" class="drawer-backdrop" aria-hidden="true"></div>
+
+    <dialog id="resourceDialog" class="dialog">
+      <form method="dialog" id="resourceForm" class="dialog-body">
+        <h3>Название ресурса</h3>
+        <input id="resourceNameInput" type="text" maxlength="64" />
+        <div class="dialog-actions">
+          <button value="cancel" class="btn btn-secondary">Отмена</button>
+          <button value="ok" class="btn btn-primary">Сохранить</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="./app.js"></script>
+  </body>
+  </html>
+
+

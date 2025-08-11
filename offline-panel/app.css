@@ -34,8 +34,9 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, "Apple Color Emoji", "Segoe UI Emoji";
   background: var(--bg);
   color: var(--text);
-  padding: 1cm; /* равные отступы со всех сторон для киоска */
-  display: flex; align-items: center; justify-content: center; /* центрирование карточки */
+  padding: 0.75cm 1cm 0.5cm 1cm; /* сверху/слева/справа — 1см, снизу — 0.5см */
+  display: flex; align-items: flex-start; justify-content: center; /* фиксируем карточку у верхнего края с отступом */
+  overflow: hidden; /* запрет глобального скролла страницы, скроллятся только внутренние области */
 }
 
 .bg-gradient {
@@ -61,6 +62,10 @@ body {
   width: 100%;
   margin: 0 auto;
   padding: env(safe-area-inset-top, 16px) 16px env(safe-area-inset-bottom, 16px);
+  height: calc(100vh - 1.5cm); /* 1см сверху + 0.5см снизу */
+  overflow: hidden; /* чтобы внутренние секции контролировали свой скролл */
+  display: flex;
+  flex-direction: column;
 }
 
 .glass {
@@ -108,7 +113,7 @@ h1 { margin: 0; font-size: 22px; }
 
 .hero { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 16px; padding: 16px; border-radius: 16px; border: 1px solid var(--glass-border); background: linear-gradient(135deg, rgba(34,197,94,0.15), rgba(15,118,110,0.15)); margin-top: 12px; min-height: 110px; }
 .hero-left { display: flex; flex-direction: column; justify-content: center; gap: 6px; }
-.hero-right { display: grid; gap: 8px; justify-items: end; align-content: center; }
+.hero-right { display: flex; gap: 12px; justify-content: flex-end; align-items: center; }
 .hero.is-busy { background: linear-gradient(135deg, rgba(239,68,68,0.2), rgba(244,63,94,0.15)); }
 .hero-title { font-size: 22px; font-weight: 800; letter-spacing: .2px; }
 .hero-sub { color: var(--muted); }
@@ -118,7 +123,6 @@ h1 { margin: 0; font-size: 22px; }
 .drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); opacity: 0; pointer-events: none; transition: opacity .2s ease; z-index: 30; }
 .drawer-backdrop.show { opacity: 1; pointer-events: auto; }
 .drawer-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.settings-panel { margin-top: 12px; padding-top: 8px; border-top: 1px dashed var(--glass-border); }
 
 .date-nav { display: flex; align-items: center; gap: 8px; justify-content: center; }
 .date-label { min-width: 180px; text-align: center; color: var(--muted); }
@@ -144,12 +148,24 @@ input, select {
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 14px;
+  transition: border-color .2s ease, box-shadow .2s ease, background .2s ease, transform .12s ease;
 }
 .theme-light input,
 .theme-light select {
   background: #ffffff;
   color: var(--text);
   border: 1px solid #d1d5db;
+}
+
+/* Анимация акцентного заполнения поля "Начало" */
+.input-highlight {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(34,197,94,0.3);
+  background: linear-gradient(180deg, rgba(34,197,94,0.10), transparent);
+}
+.theme-light .input-highlight {
+  box-shadow: 0 0 0 3px rgba(16,185,129,0.35);
+  background: linear-gradient(180deg, rgba(16,185,129,0.10), transparent);
 }
 .form-actions { display: flex; align-items: end; }
 .form-hint { grid-column: 1/-1; color: var(--muted); font-size: 12px; }
@@ -186,9 +202,27 @@ input, select {
 .container > section:last-of-type { margin-bottom: 16px; }
 
 /* Секция со списком — скролл по вертикали, верх карточки фиксирован визуально */
-.bookings-section { max-height: 40vh; overflow-y: auto; overscroll-behavior: contain; }
+.bookings-section {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  flex: 1 1 auto;
+  min-height: 0; /* важно для корректной прокрутки во flex-контейнере */
+  position: relative;
+}
+.bookings-section .section-title {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 0 8px 0;
+  padding: 8px 0;
+  background: var(--panel); /* сплошной фон, чтобы элементы списка не просвечивали */
+  border-bottom: 1px solid var(--glass-border);
+}
+.theme-light .bookings-section .section-title { background: #ffffff; }
 
-.finished-toggle { cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.finished-toggle { display: none; }
 .hidden { display: none; }
 
 .btn { border: 0; background: var(--secondary); color: var(--text); padding: 10px 12px; border-radius: 10px; }
@@ -214,14 +248,6 @@ input, select {
 .toast-container { position: fixed; inset: auto 16px 16px auto; display: grid; gap: 8px; z-index: 50; }
 .toast { background: rgba(3,7,18,.9); color: var(--text); border: 1px solid var(--glass-border); border-radius: 12px; padding: 10px 14px; box-shadow: 0 8px 24px rgba(0,0,0,.45); transform: translateY(8px); opacity: 0; animation: toastIn .25s ease forwards; }
 @keyframes toastIn { to { transform: translateY(0); opacity: 1; } }
-
-/* Light theme override: toasts should be light, not dark */
-.theme-light .toast {
-  background: rgba(255,255,255,0.98);
-  color: var(--text);
-  border: 1px solid #e5e7eb;
-  box-shadow: 0 8px 24px rgba(0,0,0,.12);
-}
 
 .popover { position: absolute; right: 0; margin-top: 6px; background: rgba(3,7,18,.96); border: 1px solid var(--glass-border); border-radius: 12px; padding: 10px; display: grid; gap: 8px; box-shadow: 0 12px 36px rgba(0,0,0,.5); min-width: 260px; visibility: hidden; opacity: 0; transform: translateY(-4px); transition: opacity .15s ease, transform .15s ease, visibility .15s; z-index: 60; }
 .theme-light .popover { background: #0b1220; border-color: rgba(15,23,42,0.15); }
