@@ -192,6 +192,22 @@ function setFormDefaults() {
   const start = minutesToHHMM(Math.max(parseTimeToMinutes(defaultWorkingHours.start), Math.min(startMins, parseTimeToMinutes(defaultWorkingHours.end) - 15)));
   $('startTime').value = start;
   $('duration').value = '15';
+  // Заполнить список дат (начиная со следующего дня)
+  const dateSel = document.getElementById('bookingDate');
+  if (dateSel && dateSel.options.length === 0) {
+    const today = new Date();
+    for (let i = 1; i <= 14; i++) { // 2 недели вперёд
+      const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i);
+      const iso = formatDateISO(d);
+      const opt = document.createElement('option');
+      opt.value = iso;
+      opt.textContent = d.toLocaleDateString('ru-RU', { weekday: 'long', day: '2-digit', month: 'long' });
+      dateSel.appendChild(opt);
+    }
+  }
+  // значение по умолчанию — завтра
+  const dateSel2 = document.getElementById('bookingDate');
+  if (dateSel2) dateSel2.value = formatDateISO(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
 }
 
 function rangesOverlap(aStart, aEnd, bStart, bEnd) {
@@ -199,7 +215,8 @@ function rangesOverlap(aStart, aEnd, bStart, bEnd) {
 }
 
 async function renderBookings() {
-  const dateISO = formatDateISO(currentDate);
+  const dateSel = document.getElementById('bookingDate');
+  const dateISO = dateSel?.value || formatDateISO(currentDate);
   const list = $('bookingsList');
   const finList = $('finishedList');
   const finCount = $('finishedCount');
@@ -374,13 +391,17 @@ function updateHeroFree(nextStart, nowMins) {
       const now = new Date();
       const start = Math.max(parseTimeToMinutes(defaultWorkingHours.start), now.getHours() * 60 + now.getMinutes());
       let anyConflict = false;
+      // Правило: если до ближайшей встречи < 20 минут, блокируем быстрые брони
+      const nextMeet = dayBookings.filter((b) => b.startMins > start).sort((a,b)=>a.startMins-b.startMins)[0];
+      const shortGap = nextMeet ? (nextMeet.startMins - start) < 20 : false;
       pop.querySelectorAll('.pop-btn[data-mins]').forEach((btn) => {
         const mins = Number(btn.getAttribute('data-mins')) || 30;
         const end = Math.ceil((start + mins) / 15) * 15;
-        const conflict = dayBookings.some((b) => rangesOverlap(start, end, b.startMins, b.endMins));
+        const conflict = shortGap || dayBookings.some((b) => rangesOverlap(start, end, b.startMins, b.endMins));
         btn.classList.toggle('conflict', conflict);
         if (conflict) anyConflict = true;
         btn.onclick = async () => {
+          if (shortGap) { showToast('До следующей встречи менее 20 минут'); return; }
           if (conflict) { showToast('Ближайшее время занято'); return; }
           await tryCreateQuick(mins);
         };
@@ -551,6 +572,11 @@ async function submitBookingForm(ev) {
   setFormDefaults();
   renderBookings();
   showToast('Забронировано');
+  // Закрыть панель бронирования после успешного создания
+  const drawer = document.getElementById('drawer');
+  const backdrop = document.getElementById('drawerBackdrop');
+  drawer?.classList.remove('open');
+  backdrop?.classList.remove('show');
 }
 
 function updateFormConflictHint(startMins, endMins, dayBookings) {
@@ -571,13 +597,15 @@ function updateFormConflictHint(startMins, endMins, dayBookings) {
 function attachFormLiveValidation() {
   const startEl = $('startTime');
   const durationEl = $('duration');
+  const dateSel = document.getElementById('bookingDate');
   const recalc = async () => {
     const startTime = startEl.value.trim();
     const duration = Number(durationEl.value);
     if (!startTime || !duration) return;
     const startMins = parseTimeToMinutes(startTime);
     const endMins = Math.ceil((startMins + duration) / 15) * 15;
-    const dayBookings = await dbGetAllBookingsByDate(formatDateISO(currentDate));
+    const dateISO = dateSel?.value || formatDateISO(currentDate);
+    const dayBookings = await dbGetAllBookingsByDate(dateISO);
     const conflict = dayBookings.some((b) => rangesOverlap(startMins, endMins, b.startMins, b.endMins));
     updateFormConflictHint(startMins, endMins, dayBookings);
     const submitBtn = document.getElementById('submitBookingBtn');
@@ -586,6 +614,7 @@ function attachFormLiveValidation() {
   };
   startEl.addEventListener('change', recalc);
   durationEl.addEventListener('change', recalc);
+  dateSel?.addEventListener('change', recalc);
   // первичная отрисовка быстрых слотов
   (async () => {
     const dayBookings = await dbGetAllBookingsByDate(formatDateISO(currentDate));
@@ -597,7 +626,9 @@ function attachFormLiveValidation() {
 }
 
 async function refreshBookingForm() {
-  const dayBookings = await dbGetAllBookingsByDate(formatDateISO(currentDate));
+  const dateSel = document.getElementById('bookingDate');
+  const targetISO = dateSel?.value || formatDateISO(currentDate);
+  const dayBookings = await dbGetAllBookingsByDate(targetISO);
   const durationEl = document.getElementById('duration');
   const duration = Number(durationEl?.value || 15);
   const starts = renderQuickSlots(dayBookings, duration);
@@ -815,6 +846,13 @@ function attachEvents() {
       finToggle.setAttribute('aria-expanded', String(!isHidden));
     });
   }
+
+  // Theme toggle
+  document.getElementById('themeToggle')?.addEventListener('click', () => {
+    document.body.classList.toggle('theme-light');
+    // Persist preference in localStorage
+    try { localStorage.setItem('theme', document.body.classList.contains('theme-light') ? 'light' : 'dark'); } catch {}
+  });
 }
 
 async function main() {
@@ -829,6 +867,11 @@ async function main() {
   await renderBookings();
   updateNowClock();
   setInterval(updateNowClock, 1000 * 30);
+  // Restore theme preference
+  try {
+    const th = localStorage.getItem('theme');
+    if (th === 'light') document.body.classList.add('theme-light');
+  } catch {}
 }
 
 if (document.readyState === 'loading') {

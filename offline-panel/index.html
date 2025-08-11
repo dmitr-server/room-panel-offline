@@ -99,9 +99,16 @@
     <aside id="drawer" class="drawer" aria-hidden="true">
       <div class="drawer-header">
         <div>Бронирование</div>
-        <button id="drawerClose" class="btn btn-sm">✕</button>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button id="themeToggle" class="btn btn-sm" title="Переключить тему">🌓</button>
+          <button id="drawerClose" class="btn btn-sm">✕</button>
+        </div>
       </div>
       <form id="bookingForm" class="booking-form" autocomplete="off">
+        <div class="form-row">
+          <label for="bookingDate">День</label>
+          <select id="bookingDate" name="bookingDate"></select>
+        </div>
         <div class="form-row">
           <label for="startTime">Начало</label>
           <input id="startTime" name="startTime" type="text" placeholder="HH:MM" pattern="^[0-9]{1,2}:[0-9]{2}$" inputmode="numeric" required title="Формат времени: HH:MM (00–23:59)" />
