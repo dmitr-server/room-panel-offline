@@ -233,6 +233,7 @@ input, select {
 .btn-danger { background: var(--danger); color: #2b0909; font-weight: 600; }
 .btn-danger:hover { background: var(--danger-600); }
 .btn-sm { padding: 6px 8px; font-size: 12px; }
+#menuBtn.btn-sm { padding-left: 16px; padding-right: 16px; }
 
 .import-label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 
